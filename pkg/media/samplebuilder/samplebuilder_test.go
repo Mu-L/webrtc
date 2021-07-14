@@ -388,3 +388,174 @@ func TestPopWithTimestamp(t *testing.T) {
 		assert.Equal(t, uint32(0), timestamp)
 	})
 }
+
+type truePartitionHeadChecker struct{}
+
+func (f *truePartitionHeadChecker) IsPartitionHead(payload []byte) bool {
+	return true
+}
+
+func TestSampleBuilderData(t *testing.T) {
+	s := New(10, &fakeDepacketizer{}, 1,
+		WithPartitionHeadChecker(&truePartitionHeadChecker{}),
+	)
+	j := 0
+	for i := 0; i < 0x20000; i++ {
+		p := rtp.Packet{
+			Header: rtp.Header{
+				SequenceNumber: uint16(i),
+				Timestamp:      uint32(i + 42),
+			},
+			Payload: []byte{byte(i)},
+		}
+		s.Push(&p)
+		for {
+			sample, ts := s.PopWithTimestamp()
+			if sample == nil {
+				break
+			}
+			assert.Equal(t, ts, uint32(j+42), "timestamp")
+			assert.Equal(t, len(sample.Data), 1, "data length")
+			assert.Equal(t, byte(j), sample.Data[0], "data")
+			j++
+		}
+	}
+	// only the last packet should be dropped
+	assert.Equal(t, j, 0x1FFFF)
+}
+
+func BenchmarkSampleBuilderSequential(b *testing.B) {
+	s := New(100, &fakeDepacketizer{}, 1)
+	b.ResetTimer()
+	j := 0
+	for i := 0; i < b.N; i++ {
+		p := rtp.Packet{
+			Header: rtp.Header{
+				SequenceNumber: uint16(i),
+				Timestamp:      uint32(i + 42),
+			},
+			Payload: make([]byte, 50),
+		}
+		s.Push(&p)
+		for {
+			s := s.Pop()
+			if s == nil {
+				break
+			}
+			j++
+		}
+	}
+	if b.N > 200 && j < b.N-100 {
+		b.Errorf("Got %v (N=%v)", j, b.N)
+	}
+}
+
+func BenchmarkSampleBuilderLoss(b *testing.B) {
+	s := New(100, &fakeDepacketizer{}, 1)
+	b.ResetTimer()
+	j := 0
+	for i := 0; i < b.N; i++ {
+		if i%13 == 0 {
+			continue
+		}
+		p := rtp.Packet{
+			Header: rtp.Header{
+				SequenceNumber: uint16(i),
+				Timestamp:      uint32(i + 42),
+			},
+			Payload: make([]byte, 50),
+		}
+		s.Push(&p)
+		for {
+			s := s.Pop()
+			if s == nil {
+				break
+			}
+			j++
+		}
+	}
+	if b.N > 200 && j < b.N/2-100 {
+		b.Errorf("Got %v (N=%v)", j, b.N)
+	}
+}
+
+func BenchmarkSampleBuilderReordered(b *testing.B) {
+	s := New(100, &fakeDepacketizer{}, 1)
+	b.ResetTimer()
+	j := 0
+	for i := 0; i < b.N; i++ {
+		p := rtp.Packet{
+			Header: rtp.Header{
+				SequenceNumber: uint16(i ^ 3),
+				Timestamp:      uint32((i ^ 3) + 42),
+			},
+			Payload: make([]byte, 50),
+		}
+		s.Push(&p)
+		for {
+			s := s.Pop()
+			if s == nil {
+				break
+			}
+			j++
+		}
+	}
+	if b.N > 2 && j < b.N-5 && j > b.N {
+		b.Errorf("Got %v (N=%v)", j, b.N)
+	}
+}
+
+func BenchmarkSampleBuilderFragmented(b *testing.B) {
+	s := New(100, &fakeDepacketizer{}, 1)
+	b.ResetTimer()
+	j := 0
+	for i := 0; i < b.N; i++ {
+		p := rtp.Packet{
+			Header: rtp.Header{
+				SequenceNumber: uint16(i),
+				Timestamp:      uint32(i/2 + 42),
+			},
+			Payload: make([]byte, 50),
+		}
+		s.Push(&p)
+		for {
+			s := s.Pop()
+			if s == nil {
+				break
+			}
+			j++
+		}
+	}
+	if b.N > 200 && j < b.N/2-100 {
+		b.Errorf("Got %v (N=%v)", j, b.N)
+	}
+}
+
+func BenchmarkSampleBuilderFragmentedLoss(b *testing.B) {
+	s := New(100, &fakeDepacketizer{}, 1)
+	b.ResetTimer()
+	j := 0
+	for i := 0; i < b.N; i++ {
+		if i%13 == 0 {
+			continue
+		}
+		p := rtp.Packet{
+			Header: rtp.Header{
+				SequenceNumber: uint16(i),
+				Timestamp:      uint32(i/2 + 42),
+			},
+			Payload: make([]byte, 50),
+		}
+		s.Push(&p)
+		for {
+			s := s.Pop()
+			if s == nil {
+				break
+			}
+			j++
+		}
+	}
+	if b.N > 200 && j < b.N/3-100 {
+		b.Errorf("Got %v (N=%v)", j, b.N)
+	}
+}
